@@ -7,8 +7,10 @@ import json
 import math
 import random
 from functools import lru_cache
+import uuid
 
 import accelerate
+from llamafactory.api import app
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -74,11 +76,11 @@ def set_left_truncate(tokenizer):
 
 def value_to_rating_token(value):
     if math.exp(value) >= 0.5 and math.exp(value) <= 1:
-        return "<positive_rating>"
+        return "True"
     elif math.exp(value) < 0.5 and math.exp(value) >= 0:
-        return "<negative_rating>"
+        return "False"
     else:
-        return "<unknow_rating>"
+        return "None"
 
 
 def tree_to_string(node):
@@ -94,7 +96,7 @@ def path_to_string(node):
         node = node.parent
     string = "\n".join(
         [
-            f"<start_of_father_id>{node.parent.index if node.parent else -1}<end_of_father_id><start_of_local_id>{node.index}<end_of_local_id><start_of_thought>{node.state}<end_of_thought><start_of_rating>{value_to_rating_token(node.value)}<end_of_rating>"
+            node.state
             for node in path[::-1]
         ]
     )
@@ -124,75 +126,26 @@ meta_action_type_to_index = {meta: i for i, meta in enumerate(meta_action_types)
 
 
 LN_2 = 0.69314718056  # ln(2) = 1.0 / LOG2_E
-GENERATE_MAX_NEW_TOKENS = 64
+GENERATE_MAX_NEW_TOKENS = 1024
 CUT_OFF_LEN = 1024
-MAX_CHILDREN_NUM = 5
-
-
-DummyTransitionProbs = np.array(
-    [
-        [0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0],
-    ]
-)
-
-
-def flatten_tree(node):
-    """
-    将树结构展开为列表，收集父节点、子节点和对应的值。
-    """
-    parents = []
-    children = []
-    values = []
-    nodes = [node]
-    while nodes:
-        current_node = nodes.pop()
-        current_idx = meta_action_type_to_index[current_node.meta]
-        for child in current_node.children:
-            child_idx = meta_action_type_to_index[child.meta]
-            parents.append(current_idx)
-            children.append(child_idx)
-            values.append(np.exp(child.value))
-            nodes.append(child)
-    return np.array(parents), np.array(children), np.array(values)
-
-
-def cal_meta_transition_probs(node):
-    num_meta_actions = len(meta_action_types)
-    # 展开树结构，获取父节点索引、子节点索引和对应的值
-    parents, children, values = flatten_tree(node)
-    # 初始化转移概率矩阵
-    TransitionProbs = np.zeros((num_meta_actions, num_meta_actions))
-    # 使用 NumPy 的高级索引和累加来更新矩阵
-    if len(parents) > 0:
-        np.add.at(TransitionProbs, (parents, children), values)
-    return TransitionProbs
-
-
-def np_softmax(x):
-    # 对矩阵的每一行进行 softmax 操作
-    max_vals = np.max(x, axis=1, keepdims=True)
-    e_x = np.exp(x - max_vals)
-    sum_e_x = np.sum(e_x, axis=1, keepdims=True)
-    return e_x / sum_e_x
+MAX_CHILDREN_NUM = 4
 
 
 @lru_cache()
 def sampling_meta_action(node, num=1, TransitionProbs=None):
-    if TransitionProbs is None:
-        root = get_root(node)
-        TransitionProbs = cal_meta_transition_probs(root)
-    # 计算转移概率的 softmax
-    transition_probs_softmax = np_softmax(TransitionProbs)
-    i = meta_action_type_to_index[node.meta]
-    p = transition_probs_softmax[i]
-    # 进行采样
-    meta_actions = np.random.choice(meta_action_types, size=num, p=p)
-    return meta_actions
-
+    if node.meta == "<conclusion>":
+        return ["<critic>"] * num
+    if node.meta == "<critic>":
+        return ["<refine>"] * num
+    if 'answer' in node.state.lower():
+        return random.choices(['<conclusion>','<expansion>'], [0.9,0.1],k=num)
+    if node.meta == "<problem>":
+        return ["<expansion>"] * num
+    if node.meta == "<expansion>":
+        value = math.exp(node.value)
+        return random.choices(['<problem>', '<critic>','<expansion>'], [(1-value)*0.2,(1-value)*0.8,value],k=num)
+    if node.meta == "<refine>":
+        return ["<expansion>"] * num
 
 class TreeNode:
     def __init__(self, state, parent=None, index=0):
@@ -269,7 +222,7 @@ class TreeNode:
             "policy_varentropy": self.policy_varentropy,
             "policy_cal_ready_texts": self.policy_cal_ready_texts,
             "value_cal_ready_texts": self.value_cal_ready_texts,
-            "true_value_from_tree": self.true_value_from_tree.tolist() if self.true_value_from_tree is not None else None,
+            "true_value_from_tree": self.true_value_from_tree if self.true_value_from_tree is not None else None,
             "leaf_type": self.leaf_type,
             "rectify_visits": self.rectify_visits,
             "original_value": self.original_value,
@@ -278,7 +231,6 @@ class TreeNode:
                 child.to_dict() for child in self.children
             ],  # Recursively add children
         }
-        print({key: type(value) for key, value in node_dict.items()})
         return node_dict
 
     @staticmethod
@@ -313,11 +265,7 @@ class TreeNode:
     def save_to_json(self, filepath):
         """Save the entire tree structure (root) to a JSON file."""
         with open(filepath, "w") as f:
-            try:
-                json.dump(self.to_dict(), f, indent=4)
-            except:
-                print(self.to_dict())
-                raise 88
+            json.dump(self.to_dict(), f, indent=4)
 
     @staticmethod
     def load_from_json(filepath):
@@ -358,8 +306,6 @@ class MCTS:
 
         for _ in tqdm(range(self.num_simulations)):
             self.simulate(root_node)
-            max_reward, path_len = find_max_reward_path(root_node)
-            print(f"find max reward path: {max_reward} with {path_len} steps.")
             if self.patient <= 0:
                 break
 
@@ -405,13 +351,13 @@ class MCTS:
             node.add_child(child_node)
             child_node.value = self.compute_value(child_node)
             child_node.meta = meta
-            # if child_node.meta == "<conclusion>":
-            orm = self.envoirment.compute_rule_orm_head(child_node)
-            if orm == True:
-                self.patient -= 1
-                child_node.leaf_type = "successful"
-            elif orm == False:
-                child_node.leaf_type = "failed"
+            if child_node.meta == "<conclusion>":
+                orm = self.envoirment.compute_rule_orm_head(child_node)
+                if orm == True:
+                    self.patient -= 1
+                    child_node.leaf_type = "successful"
+                elif orm == False:
+                    child_node.leaf_type = "failed"
             print(
                 f"Id:{node.index}->{child_node.index}, Child: {text}, Policy: {node.get_child_policy_prob(child_node)}, Value: {math.exp(child_node.value)}"
             )
@@ -427,21 +373,18 @@ class MCTS:
     def select_action(self, node):
         total_visits = sum(child.visits for child in node.children)
         ucb_scores = [
-            (
                 child.value
                 + self.exploration_const * node.get_child_policy_prob(child)
                 # * node.get_child_policy_entropy(child)
                 * np.sqrt(total_visits) / (1 + child.visits)
                 + self.varentropy_lambda * node.get_child_policy_varentropy(child)
-            )
-            * random.uniform(0.8, 1.2)
             for child in node.children
         ]
         return node.children[np.argmax(ucb_scores)]
 
     def identify_leaf(self, node):
         result = set()
-        if node.is_leaf() or node.leaf_type in ["successful", "failed"]:
+        if node.is_leaf() and node.leaf_type in ["successful", "failed"]:
             result.add(node)
         else:
             for child in node.children:
@@ -452,32 +395,32 @@ class MCTS:
         node.rectify_visits += 1
 
         if not node.true_value_from_tree:
-            node.true_value_from_tree = value
+            node.true_value_from_tree = float(value)
         else:
-            node.true_value_from_tree += (
+            node.true_value_from_tree += float((
                 value - node.true_value_from_tree
-            ) / node.rectify_visits
+            ) / node.rectify_visits)
         if node.parent:
             self.rectify_values_from_leaf(
                 node.parent, node.true_value_from_tree * self.discount_factor
             )
 
 
-hint = "<hint> Try generate a reasonable rationale solution that can got final answer {GT}</hint>"
+hint_for_expansion = "Try complete this solution step-by-step that can got final answer."
 # hint = ''
 
 hint_for_critics = (
-    f"<hint> Point out the potential flaws in the current solution. </hint>"
+    "Point out flaws or give hints to above content step-by-tep. \n hint: true answer is {}"
 )
 hint_for_refine = (
-    f"<hint> Try to refine the current solution for higher quality. </hint>"
+    "Try complete this solution step-by-step that can got final answer. You can refer to the above content and critiques."
 )
-hint_for_conclusion = "<hint> Try to summarize the current solution and draw a conclusion. Final answer should bracket in \\box{answer} </hint>"
-hint_for_divide_and_conquer = f"<hint> Try divide the problem into smaller easier sub-problems and solve them divide-and-conquer. </hint>"
+hint_for_conclusion = "Try to summarize above contents and draw a conclusion. Final answer should bracket in \\box{answer}"
+hint_for_divide_and_conquer = "Try divide the problem \n{}\n into smaller easier sub-problems and solve them divide-and-conquer."
 
 # 模板生成函数
 def problem_declaration_template(problem):
-    return f"<start_of_father_id>-1<end_of_father_id><start_of_local_id>0<end_of_local_id><start_of_thought><problem>{problem}<end_of_thought>"
+    return f"<problem>{problem}"
 
 
 def selection_head_template(tree):
@@ -485,27 +428,24 @@ def selection_head_template(tree):
 
 
 def policy_head_template(selected_node, local_id, meta="", hint=""):
-    return (
-        path_to_string(selected_node)
-        + f"{hint}\n<start_of_father_id>{selected_node.index if selected_node else -1}<end_of_father_id><start_of_local_id>{local_id}<end_of_local_id><start_of_thought>{meta}"
-    )
+    context = path_to_string(selected_node)
+    return context, hint
 
 
 def value_head_template(selected_node):
-    return (
-        path_to_string(selected_node.parent)
-        + f"\n<start_of_father_id>{selected_node.parent.index if selected_node.parent else -1}<end_of_father_id><start_of_local_id>{selected_node.index}<end_of_local_id><start_of_thought>{selected_node.state}<end_of_thought><start_of_rating>"
-    )
-
+    context = path_to_string(selected_node.parent) + f"\n<start_of_father_id>{selected_node.parent.index if selected_node.parent else -1}<end_of_father_id><start_of_local_id>{selected_node.index}<end_of_local_id><start_of_thought>{selected_node.state}<end_of_thought>"
+    hint = 'Try to evaluate the current solution. True or False?'
+    return context, hint
 
 selection_head_stopping_criteria = ["<end_of_father_id>"]
 
-policy_head_stopping_criteria = ["<end_of_thought>"]
+policy_head_stopping_criteria = ["<end_of_thought>",'<start_of_rating>','<expansion>','<problem>','<critic>','<refine>','<conclusion>']
 
 value_head_stopping_criteria = ["<end_of_rating>"]
 
 
 def clean_generated_text(text):
+    text = text.replace("<problem>", "").replace("<critic>", "").replace("<refine>", "").replace("<conclusion>", "")
     return text[: text.find("<end_of_thought>")]
 
 
@@ -576,6 +516,10 @@ def length_normed_log_probs(
         return normalized_log_probs
 
 
+def apply_chat_template(tokenizer, history):
+    history = [{'role':['user','assistant'][i % 2],'content':j} for i,j in enumerate(['hi',] + history)]
+    return tokenizer.apply_chat_template(history,tokenize=False)
+
 # 策略生成的主要函数
 @torch.no_grad()
 def compute_policy_head(
@@ -583,14 +527,17 @@ def compute_policy_head(
 ):
     local_id = get_max_node_id_in_tree(selected_node) + 1
     hint_text = {
-        "<conclusion>": hint_for_critics,
-        "<problem>": hint_for_divide_and_conquer,
-        "<critic>": hint_for_critics,
+        "<conclusion>": hint_for_conclusion,
+        "<problem>": hint_for_divide_and_conquer.format(get_root(selected_node).state),
+        "<critic>": hint_for_critics.format(envoirment.get_ground_truth(selected_node)),
         "<refine>": hint_for_refine,
-    }.get(meta, hint.format(GT=envoirment.get_ground_truth(selected_node)))
+        "<expansion>": hint_for_expansion,
+    }.get(meta)
 
-    inputs_string = policy_head_template(selected_node, local_id, meta, hint_text)
+
+    contex, hint = policy_head_template(selected_node, local_id, meta, hint_text)#
     with set_left_truncate(tokenizer):
+        inputs_string = apply_chat_template(tokenizer, [contex, hint])
         inputs = tokenizer(
             inputs_string,
             return_tensors="pt",
@@ -631,10 +578,11 @@ def compute_policy_head(
 
     normalized_probs = torch.exp(normalized_log_probs)
 
-    generated_texts = [meta + clean_generated_text(text) for text in generated_texts]
+    generated_texts = [clean_generated_text(text) for text in generated_texts]
     for i, generated_text in enumerate(generated_texts):
-        if not generated_text.startswith(meta):
-            generated_texts[i] = meta + generated_text
+        generated_texts[i] = generated_text
+        if 'The final answer is' in generated_text:
+            meta = "<conclusion>"
 
     return (
         generated_texts,
@@ -651,8 +599,9 @@ def compute_policy_head(
 # 价值头生成函数
 @torch.no_grad()
 def compute_value_head(model, tokenizer, node):
-    text_for_value = value_head_template(node) + "<positive_rating>"
+    text_for_value, hint = value_head_template(node)
     with set_left_truncate(tokenizer):
+        text_for_value = apply_chat_template(tokenizer, [text_for_value, hint, 'True'])
         inputs = tokenizer(
             text_for_value,
             return_tensors="pt",
@@ -665,8 +614,8 @@ def compute_value_head(model, tokenizer, node):
     logits = outputs.logits
 
     last_logits = logits[:, -2, :]
-    positive_token_id = tokenizer.convert_tokens_to_ids("<positive_rating>")
-    negative_token_id = tokenizer.convert_tokens_to_ids("<negative_rating>")
+    positive_token_id = tokenizer.convert_tokens_to_ids("True")
+    negative_token_id = tokenizer.convert_tokens_to_ids("False")
 
     positive_logit = last_logits[:, positive_token_id]
     negative_logit = last_logits[:, negative_token_id]
@@ -785,9 +734,9 @@ def forward_value_predict(model, tokenizer, inputs):
     logits = outputs.logits
     pos = attention_mask.sum(dim=1) - 1  # [batch_size]
 
-    # 获取 "<positive_rating>" 和 "<negative_rating>" 的 token ID
-    positive_token_id = tokenizer.convert_tokens_to_ids("<positive_rating>")
-    negative_token_id = tokenizer.convert_tokens_to_ids("<negative_rating>")
+    # 获取 "True" 和 "False" 的 token ID
+    positive_token_id = tokenizer.convert_tokens_to_ids("True")
+    negative_token_id = tokenizer.convert_tokens_to_ids("False")
 
     # 构建索引张量
     batch_size = logits.size(0)
@@ -898,11 +847,14 @@ class RLSPDataCollector:
         self.mcts = mcts
         self.tokenizer = tokenizer
         self.replay_buffer_path = replay_buffer_path
+        os.makedirs(replay_buffer_path, exist_ok=True)
 
     def self_play(self, initial_state):
         """Perform self-play to generate experiences."""
+        self.mcts.patient = 2
         self.model.eval()
         root_node = TreeNode(state=initial_state)
+        root_node.meta = "<problem>"
         root_node = self.mcts.search(root_node)
         root_node.save_to_json(self.replay_buffer_path + f"{get_md5(initial_state)}_{time.time()}.json")
         return root_node
@@ -995,7 +947,7 @@ class Environment:
         self.problems = problems
         self.num_problems = len(problems)
         self.inverse_mapping = {
-            problem_declaration_template(problem["problem"]): problem["ground_truth"]
+            problem["problem"]: problem["ground_truth"]
             for problem in problems
         }
 
@@ -1008,7 +960,7 @@ class Environment:
         - ground_truth: 该问题的正确答案，用于后续的答案验证。
         """
         selected_problem = random.choice(self.problems)
-        initial_state = problem_declaration_template(selected_problem["problem"])
+        initial_state = selected_problem["problem"]
         ground_truth = selected_problem["ground_truth"]
         return initial_state, ground_truth
 
@@ -1055,7 +1007,7 @@ class Environment:
 # 假设您已经定义了 TreeNode、MCTS 和 RLSPTrainer 类
 
 # 加载模型和 tokenizer
-model_name = "/mnt/hwfile/ai4chem/CKPT/longcot_pt_GEMMA_ZD_10_23_1"
+model_name = "google/gemma-2-2b-it" # "/mnt/hwfile/ai4chem/CKPT/longcot_pt_GEMMA_ZD_10_23_1"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name, torch_dtype=torch.bfloat16, use_cache=True
@@ -1088,8 +1040,8 @@ print("Model successfully converted to LoRA format.")
 
 
 # 初始状态和 MCTS 参数
-num_simulations = 4
-num_candidates_per_expansion = 2
+num_simulations = 256
+num_candidates_per_expansion = 1
 exploration_const = 1.4
 discount_factor = 0.9
 reward_epsilon = 1e-6
@@ -1097,6 +1049,9 @@ reward_epsilon = 1e-6
 
 
 ds = load_dataset("openai/gsm8k", "main")["train"]
+ds = ds.shuffle(int(uuid.uuid4()) % (2**32 - 1))
+
+manual_seed(int(uuid.uuid4())  % (2**32 - 1))
 
 problems = [{"problem": p["question"], "ground_truth": p["answer"]} for p in ds]
 
@@ -1125,5 +1080,3 @@ collector = RLSPDataCollector(envoirment, model, tokenizer, mcts)
 for _ in range(1000):
     initial_state, ground_truth = envoirment.sample_initial_state()
     root_node = collector.self_play(initial_state)
-    print(get_path_reward_real(root_node), get_path_reward_sim(root_node))
-    print(get_path_reward_real(get_root(root_node)), get_path_reward_sim(get_root(root_node)))
