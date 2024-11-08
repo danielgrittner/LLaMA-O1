@@ -1,8 +1,0 @@
-{
-    "index": 0,
-    "state": "<start_of_father_id>-1<end_of_father_id><start_of_local_id>0<end_of_local_id><start_of_thought><problem>Matt buys a massager.  At the lowest setting, it vibrates at 1600 vibrations per second.  At the highest setting, it vibrates 60% faster.  Matt uses it for 5 minutes at the highest setting.  How many vibrations does he experience?<end_of_thought>",
-    "parent": null,
-    "visits": 4,
-    "value": -0.03632904052734375,
-    "policy": {
-        

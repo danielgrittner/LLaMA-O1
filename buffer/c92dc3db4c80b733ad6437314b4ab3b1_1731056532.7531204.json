@@ -1,8 +1,0 @@
-{
-    "index": 0,
-    "state": "<start_of_father_id>-1<end_of_father_id><start_of_local_id>0<end_of_local_id><start_of_thought><problem>Bill is making omelets for his family's breakfast. It takes him 3 minutes to chop a pepper, 4 minutes to chop an onion, and 1 minute to grate enough cheese for one omelet. It takes him 5 minutes to assemble and cook the omelet. If he needs to chop up four peppers, two onions, and also grates cheese for cooking each of five omelets, how long will he spend preparing for and cooking the five omelets?<end_of_thought>",
-    "parent": null,
-    "visits": 4,
-    "value": -0.5476025390625,
-    "policy": {
-        
