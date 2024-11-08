@@ -1,0 +1,8 @@
+{
+    "index": 0,
+    "state": "<start_of_father_id>-1<end_of_father_id><start_of_local_id>0<end_of_local_id><start_of_thought><problem>Jed\u2019s family wants to buy 6 different board games. Each board game costs $15 and Jed paid using a $100 bill. If the cashier gave Jed only $5 bills for his change, how many bills did Jed receive?<end_of_thought>",
+    "parent": null,
+    "visits": 12,
+    "value": -0.09672074890136718,
+    "policy": {
+        
