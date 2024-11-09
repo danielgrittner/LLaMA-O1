@@ -4,16 +4,8 @@ Large Reasoning Models powered by Monte Carlo Tree Search (MCTS), Self-Play Rein
 **DISCLAIM: This repository was for personal experimentation only and has no connection with my employer or any third-party organization or institution.**
 ![alt text](image-1.png)
 ## Call for Contributors！
-### Known issues
-[] limited Sampling speed
-
-  working in progress
-
- 
-[] Deepspeed initialization bug
-
-Fixed
-## Tutorials
+## Documents
+[Documents](https://github.com/SimpleBerry/LLaMA-O1/wiki)
 [From AlphaGO Zero to RLHF...TBD]()
 ## Datasets
 
