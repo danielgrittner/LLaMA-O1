@@ -3,3 +3,8 @@ tmp_trainer
 output
 replay_buffer.pkl
 buffer
+*.sh
+*.bash
+*.out
+*.log
+*/*.pyc
