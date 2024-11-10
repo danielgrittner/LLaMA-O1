@@ -89,7 +89,7 @@ def path_to_string(node):
 
 
 def get_max_node_id_in_tree(node):
-    if not node.parent:
+    if node.parent:
         while node.parent:
             node = node.parent
     max_id = node.index
