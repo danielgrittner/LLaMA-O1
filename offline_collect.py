@@ -126,7 +126,7 @@ meta_action_type_to_index = {meta: i for i, meta in enumerate(meta_action_types)
 
 
 LN_2 = 0.69314718056  # ln(2) = 1.0 / LOG2_E
-GENERATE_MAX_NEW_TOKENS = 1024
+GENERATE_MAX_NEW_TOKENS = 5120
 CUT_OFF_LEN = 1024
 MAX_CHILDREN_NUM = 4
 
@@ -138,12 +138,22 @@ def sampling_meta_action(node, num=1, TransitionProbs=None):
     if node.meta == "<critic>":
         return ["<refine>"] * num
     if 'answer' in node.state.lower():
-        return random.choices(['<conclusion>','<expansion>'], [0.9,0.1],k=num)
+        value = math.exp(node.value)
+        if value > 0.5:
+            return ["<conclusion>"] * num
+        else:
+            return ['<expansion>'] * num
     if node.meta == "<problem>":
         return ["<expansion>"] * num
     if node.meta == "<expansion>":
         value = math.exp(node.value)
-        return random.choices(['<problem>', '<critic>','<expansion>'], [(1-value)*0.2,(1-value)*0.8,value],k=num)
+        if value < 0.1:
+            return '<problem>'
+        elif 0.2 <= value <= 0.6:
+            return '<critic>'
+        else:
+            return '<expansion>'
+        # return random.choices(['<problem>', '<critic>','<expansion>'], [(1-value)*0.2,(1-value)*0.8,value],k=num)
     if node.meta == "<refine>":
         return ["<expansion>"] * num
 
@@ -1007,11 +1017,14 @@ class Environment:
 # 假设您已经定义了 TreeNode、MCTS 和 RLSPTrainer 类
 
 # 加载模型和 tokenizer
-model_name = "google/gemma-2-2b-it" # "/mnt/hwfile/ai4chem/CKPT/longcot_pt_GEMMA_ZD_10_23_1"
+model_name = "meta-llama/Llama-3.1-8B-Instruct" #"google/gemma-2-2b-it" # "/mnt/hwfile/ai4chem/CKPT/longcot_pt_GEMMA_ZD_10_23_1"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name, torch_dtype=torch.bfloat16, use_cache=True
 )
+
+if model_name.lower().find("llama") != -1:
+    tokenizer.pad_token = tokenizer.eos_token
 
 # # 设置 LoRA 配置
 # lora_config = LoraConfig(
@@ -1040,7 +1053,7 @@ print("Model successfully converted to LoRA format.")
 
 
 # 初始状态和 MCTS 参数
-num_simulations = 256
+num_simulations = 64
 num_candidates_per_expansion = 1
 exploration_const = 1.4
 discount_factor = 0.9
@@ -1048,16 +1061,17 @@ reward_epsilon = 1e-6
 
 
 
-ds = load_dataset("openai/gsm8k", "main")["train"]
+# ds = load_dataset("openai/gsm8k", "main")["train"]
+ds = load_dataset("lighteval/MATH", "all")['train']
 ds = ds.shuffle(int(uuid.uuid4()) % (2**32 - 1))
 
 manual_seed(int(uuid.uuid4())  % (2**32 - 1))
 
-problems = [{"problem": p["question"], "ground_truth": p["answer"]} for p in ds]
+# problems = [{"problem": p["question"], "ground_truth": p["answer"]} for p in ds]
 
-# ds = load_dataset("lighteval/MATH", "all")['train']
 
-# problems = [{"problem": p['problem'], "ground_truth": p['solution']} for p in ds]
+
+problems = [{"problem": p['problem'], "ground_truth": p['solution']} for p in ds]
 
 envoirment = Environment(problems)
 
