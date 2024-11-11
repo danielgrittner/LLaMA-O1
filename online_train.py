@@ -505,7 +505,8 @@ def compute_policy_head(model, tokenizer, selected_node, num_candidates=3, meta=
     )
 
     generated_sequences = outputs.sequences[:, inputs['input_ids'].size(1):]
-    generated_sequences_mask = generated_sequences != tokenizer.pad_token_id
+    generated_sequences_mask = torch.zeros_like(output_seqs)
+    generated_sequences_mask[output_seqs != tokenizer.pad_token_id] = 1
     generated_texts = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
 
     logits = torch.stack(outputs.logits, dim=1)
