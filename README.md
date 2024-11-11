@@ -78,3 +78,7 @@ PS: Please reserve author information and citations in re-developments.
 ```
 di.zhang@ustc.edu
 ```
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=SimpleBerry/LLaMA-O1&type=Date)](https://star-history.com/#SimpleBerry/LLaMA-O1&Date)
