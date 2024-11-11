@@ -21,7 +21,7 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer, SinkCache,
                           StoppingCriteria, StoppingCriteriaList, Trainer,
                           TrainingArguments)
 
-from grading import check
+from grading import check, extract_label
 
 import os
 import pickle
@@ -126,8 +126,8 @@ meta_action_type_to_index = {meta: i for i, meta in enumerate(meta_action_types)
 
 
 LN_2 = 0.69314718056  # ln(2) = 1.0 / LOG2_E
-GENERATE_MAX_NEW_TOKENS = 5120
-CUT_OFF_LEN = 1024
+GENERATE_MAX_NEW_TOKENS = 1024
+CUT_OFF_LEN = 40960
 MAX_CHILDREN_NUM = 4
 
 
@@ -138,24 +138,27 @@ def sampling_meta_action(node, num=1, TransitionProbs=None):
     if node.meta == "<critic>":
         return ["<refine>"] * num
     if 'answer' in node.state.lower():
+        child_metas = [child.meta for child in node.children]
+        child_leaf_types = [child.leaf_type for child in node.children]
         value = math.exp(node.value)
-        if value > 0.5:
-            return ["<conclusion>"] * num
-        else:
-            return ['<expansion>'] * num
+        if '<conclusion>' in child_metas and 'successful' in child_leaf_types:
+            return ['<critic>'] * num
+        return random.choices(['<conclusion>','<critic>'], [value,1-value],k=num)
     if node.meta == "<problem>":
         return ["<expansion>"] * num
     if node.meta == "<expansion>":
         value = math.exp(node.value)
-        if value < 0.1:
-            return '<problem>'
-        elif 0.2 <= value <= 0.6:
-            return '<critic>'
-        else:
-            return '<expansion>'
-        # return random.choices(['<problem>', '<critic>','<expansion>'], [(1-value)*0.2,(1-value)*0.8,value],k=num)
+        # if value < 0.1:
+        #     return ['<problem>']  * num
+        # elif 0.2 <= value <= 0.6:
+        #     return ['<critic>'] * num
+        # else:
+        #     return ['<expansion>'] * num
+        return random.choices(['<problem>', '<critic>','<expansion>'], [(1-value)*0.2,(1-value)*0.8,value],k=num)
     if node.meta == "<refine>":
         return ["<expansion>"] * num
+    
+    return ["<expansion>"] * num
 
 class TreeNode:
     def __init__(self, state, parent=None, index=0):
@@ -415,18 +418,16 @@ class MCTS:
                 node.parent, node.true_value_from_tree * self.discount_factor
             )
 
-
 hint_for_expansion = "Try complete this solution step-by-step that can got final answer."
-# hint = ''
 
 hint_for_critics = (
-    "Point out flaws or give hints to above content step-by-tep. \n hint: true answer is {}"
+    "Point out flaws or give hints to above content step-by-step. \n hint: true answer is {}"
 )
 hint_for_refine = (
-    "Try complete this solution step-by-step that can got final answer. You can refer to the above content and critiques."
+    "Try solute this problem step-by-step that can got final answer in better alternative ways. You can refer to the above content and critiques."
 )
 hint_for_conclusion = "Try to summarize above contents and draw a conclusion. Final answer should bracket in \\box{answer}"
-hint_for_divide_and_conquer = "Try divide the problem \n{}\n into smaller easier sub-problems and solve them divide-and-conquer."
+hint_for_divide_and_conquer = "Try divide the problem \n{}\n into smaller easier sub-problems and solve them divide-and-conquer.\n hint: true answer is {}"
 
 # 模板生成函数
 def problem_declaration_template(problem):
@@ -479,7 +480,6 @@ def robust_softmax(logits):
     return probs, log_probs
 
 
-# 长度归一化的对数概率、熵和熵的方差计算
 def length_normed_log_probs(
     sequence_ids,
     logits_tensor,
@@ -502,7 +502,11 @@ def length_normed_log_probs(
     length = (
         sequence_ids.size(1) if attention_mask is None else attention_mask.sum(dim=1)
     )
-    normalized_log_probs = summed_log_probs / length
+
+    # Check for length == 0 to avoid division by zero
+    normalized_log_probs = torch.where(
+        length > 0, summed_log_probs / length, torch.zeros_like(summed_log_probs)
+    )
 
     if return_entropy or return_varentropy:
         probs = torch.exp(log_probs)
@@ -510,20 +514,25 @@ def length_normed_log_probs(
         if attention_mask is not None:
             entropy = entropy * attention_mask
         summed_entropy = entropy.sum(dim=1)
-        normalized_entropy = summed_entropy / length
+        normalized_entropy = torch.where(
+            length > 0, summed_entropy / length, torch.zeros_like(summed_entropy)
+        )
 
     if return_varentropy:
         varentropy = torch.sum(probs * (log_probs + entropy.unsqueeze(-1)) ** 2, dim=-1)
         if attention_mask is not None:
             varentropy = varentropy * attention_mask
         summed_varentropy = varentropy.sum(dim=1)
-        normalized_varentropy = summed_varentropy / length
+        normalized_varentropy = torch.where(
+            length > 0, summed_varentropy / length, torch.zeros_like(summed_varentropy)
+        )
         return normalized_log_probs, normalized_entropy, normalized_varentropy
 
     if return_entropy:
         return normalized_log_probs, normalized_entropy
     else:
         return normalized_log_probs
+
 
 
 def apply_chat_template(tokenizer, history):
@@ -538,10 +547,10 @@ def compute_policy_head(
     local_id = get_max_node_id_in_tree(selected_node) + 1
     hint_text = {
         "<conclusion>": hint_for_conclusion,
-        "<problem>": hint_for_divide_and_conquer.format(get_root(selected_node).state),
+        "<problem>": hint_for_divide_and_conquer.format(get_root(selected_node).state,envoirment.get_ground_truth(selected_node)),
         "<critic>": hint_for_critics.format(envoirment.get_ground_truth(selected_node)),
         "<refine>": hint_for_refine,
-        "<expansion>": hint_for_expansion,
+        "<expansion>": hint_for_expansion
     }.get(meta)
 
 
@@ -565,7 +574,7 @@ def compute_policy_head(
         num_return_sequences=num_candidates,
         return_dict_in_generate=True,
         output_scores=True,
-        temperature=1.5,
+        # temperature=1.5,
         output_logits=True,
         stop_strings=policy_head_stopping_criteria,
         tokenizer=tokenizer,
@@ -851,17 +860,18 @@ def get_md5(string):
     return hashlib.md5(str(string).encode()).hexdigest()
 
 class RLSPDataCollector:
-    def __init__(self, environment, model, tokenizer, mcts, replay_buffer_path='./buffer/'):
+    def __init__(self, environment, model, tokenizer, mcts, patient=2, replay_buffer_path='./buffer/'):
         self.environment = environment
         self.model = model
         self.mcts = mcts
         self.tokenizer = tokenizer
         self.replay_buffer_path = replay_buffer_path
         os.makedirs(replay_buffer_path, exist_ok=True)
+        self.patient = patient
 
     def self_play(self, initial_state):
         """Perform self-play to generate experiences."""
-        self.mcts.patient = 2
+        self.mcts.patient = self.patient
         self.model.eval()
         root_node = TreeNode(state=initial_state)
         root_node.meta = "<problem>"
@@ -1011,13 +1021,16 @@ class Environment:
             return result
         except:
             return None
+        
+    def get_ground_truth_label(self, node):
+        return extract_label(self.inverse_mapping.get(get_root(node).state),"")
 
 
 
 # 假设您已经定义了 TreeNode、MCTS 和 RLSPTrainer 类
 
 # 加载模型和 tokenizer
-model_name = "meta-llama/Llama-3.1-8B-Instruct" #"google/gemma-2-2b-it" # "/mnt/hwfile/ai4chem/CKPT/longcot_pt_GEMMA_ZD_10_23_1"
+model_name =  "google/gemma-2-2b-it" # "/mnt/hwfile/ai4chem/CKPT/longcot_pt_GEMMA_ZD_10_23_1" 
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name, torch_dtype=torch.bfloat16, use_cache=True
@@ -1053,25 +1066,29 @@ print("Model successfully converted to LoRA format.")
 
 
 # 初始状态和 MCTS 参数
-num_simulations = 64
+num_simulations = 1024
 num_candidates_per_expansion = 1
 exploration_const = 1.4
 discount_factor = 0.9
 reward_epsilon = 1e-6
+patient = 1
 
 
 
-# ds = load_dataset("openai/gsm8k", "main")["train"]
+ds0 = load_dataset("openai/gsm8k", "main")["train"]
 ds = load_dataset("lighteval/MATH", "all")['train']
+ds0 = ds0.shuffle(int(uuid.uuid4()) % (2**32 - 1))
 ds = ds.shuffle(int(uuid.uuid4()) % (2**32 - 1))
 
 manual_seed(int(uuid.uuid4())  % (2**32 - 1))
 
-# problems = [{"problem": p["question"], "ground_truth": p["answer"]} for p in ds]
+problems0 = [{"problem": p["question"], "ground_truth": p["answer"]} for p in ds0]
 
 
 
 problems = [{"problem": p['problem'], "ground_truth": p['solution']} for p in ds]
+
+problems = problems0 + problems
 
 envoirment = Environment(problems)
 
@@ -1085,11 +1102,12 @@ mcts = MCTS(
     exploration_const=exploration_const,
     discount_factor=discount_factor,
     reward_epsilon=reward_epsilon,
+    patient=patient,
 )
 
 model = model.to(accelerator.device)
 
-collector = RLSPDataCollector(envoirment, model, tokenizer, mcts)
+collector = RLSPDataCollector(envoirment, model, tokenizer, mcts, patient=patient)
 
 for _ in range(1000):
     initial_state, ground_truth = envoirment.sample_initial_state()
