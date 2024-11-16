@@ -37,12 +37,12 @@ git pull
 Run training,
 ```
 # cd LLaMA-O1
-python main.py
+python online_train.py
 ```
 Or run with Accelerate,
 ```
 accelerate config
-accelerate launch main.py
+accelerate launch online_train.py
 ```
 
 
