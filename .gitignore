@@ -2,3 +2,10 @@ __pycache__
 tmp_trainer
 output
 replay_buffer.pkl
+buffer
+*.sh
+*.bash
+*.out
+*.log
+*/*.pyc
+buffer_gsm8k_gemma2b

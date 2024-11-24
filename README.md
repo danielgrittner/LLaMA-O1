@@ -1,19 +1,11 @@
 # LLaMA-O1: Open Large Reasoning Model Frameworks For Training, Inference and Evaluation With PyTorch and HuggingFace
 Large Reasoning Models powered by Monte Carlo Tree Search (MCTS), Self-Play Reinforcement Learning, PPO, AlphaGo Zero's dua policy paradigm and Large Language Models!
 
-**DISCLAIM: This repository was for personal experimentation only and has no connection with any third-party organization or institution.**
+**DISCLAIM: This repository was for personal experimentation only and has no connection with my employer or any third-party organization or institution.**
 ![alt text](image-1.png)
 ## Call for Contributors！
-### Known issues
-[] limited Sampling speed
-
-  working in progress
-
- 
-[] Deepspeed initialization bug
-
-Fixed
-## Tutorials
+## Documents
+[Documents](https://github.com/SimpleBerry/LLaMA-O1/wiki)
 [From AlphaGO Zero to RLHF...TBD]()
 ## Datasets
 
@@ -45,12 +37,12 @@ git pull
 Run training,
 ```
 # cd LLaMA-O1
-python main.py
+python online_train.py
 ```
 Or run with Accelerate,
 ```
 accelerate config
-accelerate launch main.py
+accelerate launch online_train.py
 ```
 
 
@@ -86,3 +78,7 @@ PS: Please reserve author information and citations in re-developments.
 ```
 di.zhang@ustc.edu
 ```
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=SimpleBerry/LLaMA-O1&type=Date)](https://star-history.com/#SimpleBerry/LLaMA-O1&Date)
